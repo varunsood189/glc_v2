@@ -18,12 +18,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from jsonschema import Draft202012Validator, ValidationError
 
 from glc import db
 from glc import providers as P
+from glc.security.api_auth import require_api_token
 from glc.llm_schemas import (
     BatchChatRequest,
     ChatRequest,
@@ -69,7 +70,7 @@ ROUTER_PROMPT = (
     "Output the single word and nothing else."
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_api_token)])
 
 
 # ─────────────────────────── helpers (verbatim port) ──────────────────────────
