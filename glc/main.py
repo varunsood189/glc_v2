@@ -73,7 +73,22 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GLC v1 — Gateway for LLMs and Channels", lifespan=lifespan)
+# In production (GLC_ENV=prod) suppress the interactive API explorer and the
+# raw OpenAPI schema. Both leak the full route inventory, provider order, model
+# names, rate limits, and request/response shapes to any anonymous caller —
+# even after Step 1 gated the data plane — because FastAPI serves them before
+# the dependency is evaluated (they are framework-level routes, not app routes).
+# Closing them removes finding A2's last remaining surface. Keep them enabled in
+# dev/test so the explorer is still usable locally.
+_prod = os.getenv("GLC_ENV") == "prod"
+
+app = FastAPI(
+    title="GLC v1 — Gateway for LLMs and Channels",
+    lifespan=lifespan,
+    docs_url=None if _prod else "/docs",
+    redoc_url=None if _prod else "/redoc",
+    openapi_url=None if _prod else "/openapi.json",
+)
 
 app.include_router(chat_route.router)
 app.include_router(transcribe_route.router)
