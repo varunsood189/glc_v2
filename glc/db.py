@@ -9,11 +9,51 @@ separate append-only store under glc/audit/store.py.
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
+
+# Upper bounds for numeric ledger fields.
+# Values above these are clamped, not rejected, so a legitimate large-context
+# call (e.g. Gemini 2.5 with a 2M-token context window) still records correctly
+# while an in-process attacker cannot inflate counts into the billions.
+_MAX_TOKENS = 2_000_000      # 2 M tokens — covers today's largest context windows
+_MAX_LATENCY_MS = 300_000    # 5 minutes
+_MAX_CHARS = 10_000_000      # 10 M characters (~2.5 M tokens worth of text)
+_MAX_TOOL_CALLS = 1_000
+_MAX_RETRIES = 100
+_MAX_EMBED_DIM = 100_000
+
+
+def _clamp(value: int | float | None, lo: int, hi: int, field: str) -> int:
+    """Return *value* clamped to [lo, hi].
+
+    Negative values are raised to *lo* and values above *hi* are reduced to
+    *hi*. Both cases are logged at WARNING level so operators can detect
+    attempted ledger poisoning or genuine provider anomalies.
+    """
+    if value is None:
+        return lo
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        _log.warning("db.log_call: non-numeric value for %s=%r; recording 0", field, value)
+        return lo
+    if v < lo:
+        _log.warning("db.log_call: %s=%d is negative; clamping to %d", field, v, lo)
+        return lo
+    if v > hi:
+        _log.warning(
+            "db.log_call: %s=%d exceeds limit %d — possible ledger poisoning; clamping",
+            field, v, hi,
+        )
+        return hi
+    return v
 
 DEFAULT_DIR = Path(os.path.expanduser("~/.glc"))
 DB_PATH = os.getenv("GLC_GATEWAY_DB", str(DEFAULT_DIR / "gateway.sqlite"))
@@ -96,6 +136,13 @@ def log_call(
     session=None,
     retries=0,
 ) -> None:
+    # Clamp all numeric fields before writing. Without this any in-process code
+    # (e.g. a hostile adapter sharing the gateway process) can call log_call with
+    # input_tokens=999_999_999 and inflate the cost ledger for any agent_id —
+    # poisoning /v1/cost/by_agent and potentially triggering fake budget alerts.
+    # This is Leak 10 / invariant 8. Clamping (not rejection) is used so a
+    # legitimate large-context call still records; the WARNING log makes
+    # anomalous values visible to operators.
     with conn() as c:
         c.execute(
             """INSERT INTO calls (ts, provider, model, input_tokens, output_tokens,
@@ -107,28 +154,28 @@ def log_call(
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 time.time(),
-                provider,
-                model,
-                input_tokens,
-                output_tokens,
-                cache_create_tokens,
-                cache_read_tokens,
-                latency_ms,
+                str(provider or "unknown"),
+                str(model or "unknown"),
+                _clamp(input_tokens, 0, _MAX_TOKENS, "input_tokens"),
+                _clamp(output_tokens, 0, _MAX_TOKENS, "output_tokens"),
+                _clamp(cache_create_tokens, 0, _MAX_TOKENS, "cache_create_tokens"),
+                _clamp(cache_read_tokens, 0, _MAX_TOKENS, "cache_read_tokens"),
+                _clamp(latency_ms, 0, _MAX_LATENCY_MS, "latency_ms"),
                 status,
                 error,
-                prompt_chars,
-                response_chars,
+                _clamp(prompt_chars, 0, _MAX_CHARS, "prompt_chars"),
+                _clamp(response_chars, 0, _MAX_CHARS, "response_chars"),
                 override,
                 attempted,
-                tool_calls,
+                _clamp(tool_calls, 0, _MAX_TOOL_CALLS, "tool_calls"),
                 1 if reasoning_applied else 0,
                 tool_dialect,
                 call_role,
                 router_decision,
-                embed_dim,
+                _clamp(embed_dim, 0, _MAX_EMBED_DIM, "embed_dim") if embed_dim is not None else None,
                 agent,
                 session,
-                retries,
+                _clamp(retries, 0, _MAX_RETRIES, "retries"),
             ),
         )
 
