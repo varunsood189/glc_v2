@@ -8,10 +8,10 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from glc.security.api_auth import require_api_token
+from glc.security.api_auth import check_rate_limit, require_api_token
 from glc.voice.stt import STTError, transcribe
 
-router = APIRouter(dependencies=[Depends(require_api_token)])
+router = APIRouter(dependencies=[Depends(require_api_token), Depends(check_rate_limit)])
 
 
 class TranscribeRequest(BaseModel):

@@ -27,7 +27,7 @@ from jsonschema import Draft202012Validator, ValidationError
 
 from glc import db
 from glc import providers as P
-from glc.security.api_auth import require_api_token
+from glc.security.api_auth import check_rate_limit, require_api_token
 from glc.llm_schemas import (
     BatchChatRequest,
     ChatRequest,
@@ -73,7 +73,7 @@ ROUTER_PROMPT = (
     "Output the single word and nothing else."
 )
 
-router = APIRouter(dependencies=[Depends(require_api_token)])
+router = APIRouter(dependencies=[Depends(require_api_token), Depends(check_rate_limit)])
 
 
 # ─────────────────────────── helpers (verbatim port) ──────────────────────────
